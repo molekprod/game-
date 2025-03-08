@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Neon Snake - Cyberpunk Matrix</title>
+    <style>
+        canvas {
+            border: 1px solid #00ffff;
+            background: #0d1b2a;
+            margin: 0 auto;
+            display: block;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+            max-width: 100%;
+            height: auto;
+            min-width: 300px; /* Valeur minimale pour éviter un canvas trop petit */
+            min-height: 300px;
+        }
+        body {
+            background: #1b263b;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            color: #00ffff;
+            font-family: 'Courier New', monospace;
+            touch-action: manipulation;
+        }
+        #restartButton {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 16px;
+            display: none;
+            background: #ff0066;
+            border: 2px solid #ff0066;
+            color: #00ffff;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+        #score {
+            font-size: 24px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 5px #00ffff;
+        }
+        #headPosition {
+            font-size: 16px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 3px #00ffff;
+        }
+        #speedControl, #modeControl {
+            margin-top: 10px;
+        }
+        #speedLabel, #modeLabel {
+            margin-top: 5px;
+            font-size: 16px;
+            text-shadow: 0 0 3px #00ffff;
+        }
+        #modeSelect {
+            background: #0d1b2a;
+            color: #00ffff;
+            border: 1px solid #ff0066;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="headPosition">Tête: (0, 0)</div>
+    <canvas id="gameCanvas"></canvas>
+    <button id="restartButton">Restart</button>
+    <div id="speedControl">
+        <input type="range" id="speedSlider" min="50" max="300" value="100">
+    </div>
+    <div id="speedLabel">Vitesse: 100</div>
+    <div id="modeControl">
+        <select id="modeSelect">
+            <option value="classic">Mode Classique</option>
+            <option value="wrap" selected>Mode Traversée</option>
+        </select>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const restartButton = document.getElementById('restartButton');
+        const scoreDisplay = document.getElementById('score');
+        const headPositionDisplay = document.getElementById('headPosition');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedLabel = document.getElementById('speedLabel');
+        const modeSelect = document.getElementById('modeSelect');
+
+        // Adapter la taille du canvas à l'écran
+        function resizeCanvas() {
+            const maxWidth = Math.min(window.innerWidth - 20, 400); // Limite à 400px ou la largeur de l'écran
+            const maxHeight = Math.min(window.innerHeight - 150, 400); // Ajuster pour les contrôles
+            canvas.width = Math.max(maxWidth, 300); // Minimum 300px
+            canvas.height = Math.max(maxHeight, 300); // Minimum 300px
+            TILE_SIZE = canvas.width / GRID_SIZE; // Mettre à jour TILE_SIZE après redimensionnement
+            console.log("Canvas redimensionné : width =", canvas.width, "height =", canvas.height);
+        }
+
+        // Appeler resizeCanvas au chargement et au redimensionnement
+        window.addEventListener('load', resizeCanvas);
+        window.addEventListener('resize', resizeCanvas);
+
+        // Constantes
+        const GRID_SIZE = 20;
+        let TILE_SIZE = canvas.width / GRID_SIZE;
+        let SNAKE_SPEED = parseInt(speedSlider.value);
+
+        // Serpent
+        const snake = [
+            { x: 10, y: 10 }
+        ];
+        let dx = 1;
+        let dy = 0;
+        let food = spawnFood();
+        let score = 0;
+        let gameOver = false;
+        let gameLoopId = null;
+        let targetX = snake[0].x * TILE_SIZE;
+        let targetY = snake[0].y * TILE_SIZE;
+        let turning = false;
+        let hasMoved = false;
+
+        // Effets
+        let clickEffect = null;
+        let eatParticles = [];
+        let gameOverEffect = { alpha: 0, glitch: 0, matrixLines: [] };
+
+        // Contrôle au clic et tactile
+        canvas.addEventListener('click', handleInput);
+        canvas.addEventListener('touchstart', handleInput, { passive: true });
+
+        function handleInput(e) {
+            if (gameOver) return;
+            e.preventDefault(); // Empêcher le zoom ou le défilement
+            const rect = canvas.getBoundingClientRect();
+            let touchX, touchY;
+            if (e.type === 'touchstart') {
+                touchX = e.touches[0].clientX - rect.left;
+                touchY = e.touches[0].clientY - rect.top;
+            } else {
+                touchX = e.clientX - rect.left;
+                touchY = e.clientY - rect.top;
+            }
+            targetX = touchX;
+            targetY = touchY;
+
+            clickEffect = {
+                x: Math.floor(touchX / TILE_SIZE) * TILE_SIZE + TILE_SIZE / 2,
+                y: Math.floor(touchY / TILE_SIZE) * TILE_SIZE + TILE_SIZE / 2,
+                radius: 0,
+                maxRadius: TILE_SIZE,
+                alpha: 1,
+                growing: true
+            };
+
+            console.log("Input détecté: targetX =", touchX / TILE_SIZE, "targetY =", touchY / TILE_SIZE);
+            updateDirection();
+        }
+
+        // Contrôle de la vitesse
+        speedSlider.addEventListener('input', () => {
+            SNAKE_SPEED = parseInt(speedSlider.value);
+            speedLabel.textContent = `Vitesse: ${SNAKE_SPEED}`;
+            if (!gameOver) {
+                clearInterval(gameLoopId);
+                gameLoopId = setInterval(gameLoop, SNAKE_SPEED);
+            }
+        });
+
+        modeSelect.addEventListener('change', () => {
+            console.log("Mode changé vers:", modeSelect.value);
+            resetGame();
+        });
+
+        restartButton.addEventListener('click', resetGame);
+
+        function resetGame() {
+            snake.length = 1;
+            snake[0] = { x: 10, y: 10 };
+            dx = 1;
+            dy = 0;
+            score = 0;
+            food = spawnFood();
+            targetX = snake[0].x * TILE_SIZE;
+            targetY = snake[0].y * TILE_SIZE;
+            clickEffect = null;
+            eatParticles = [];
+            gameOverEffect = { alpha: 0, glitch: 0, matrixLines: [] };
+            turning = false;
+            hasMoved = false;
+            gameOver = false;
+            restartButton.style.display = 'none';
+            updateScore();
+            updateHeadPosition();
+            resizeCanvas(); // Réajuster la taille au reset
+            draw(); // Forcer le premier rendu
+            if (gameLoopId) clearInterval(gameLoopId);
+            gameLoopId = setInterval(gameLoop, SNAKE_SPEED);
+            console.log("Jeu redémarré, mode actuel:", modeSelect.value);
+        }
+
+        function updateScore() {
+            scoreDisplay.textContent = `Score: ${score}`;
+        }
+
+        function updateHeadPosition() {
+            headPositionDisplay.textContent = `Tête: (${snake[0].x}, ${snake[0].y})`;
+        }
+
+        function spawnFood() {
+            const food = {
+                x: Math.floor(Math.random() * GRID_SIZE),
+                y: Math.floor(Math.random() * GRID_SIZE)
+            };
+            if (snake.some(segment => segment.x === food.x && segment.y === food.y)) {
+                return spawnFood();
+            }
+            return food;
+        }
+
+        function updateDirection() {
+            const headX = snake[0].x * TILE_SIZE + TILE_SIZE / 2;
+            const headY = snake[0].y * TILE_SIZE + TILE_SIZE / 2;
+            const diffX = targetX - headX;
+            const diffY = targetY - headY;
+
+            const isOpposite = (dx === 1 && diffX < 0) || (dx === -1 && diffX > 0) ||
+                              (dy === 1 && diffY < 0) || (dy === -1 && diffY > 0);
+
+            if (isOpposite && snake.length > 1 && !turning) {
+                turning = true;
+                if (dx !== 0) {
+                    dy = (diffY >= 0) ? 1 : -1;
+                    dx = 0;
+                } else {
+                    dx = (diffX >= 0) ? 1 : -1;
+                    dy = 0;
+                }
+                console.log("Début virage: dx =", dx, "dy =", dy);
+            } else if (turning) {
+                const nextSegmentX = snake[0].x + dx;
+                const nextSegmentY = snake[0].y + dy;
+                const isNextSegmentOccupied = snake.some(s => s.x === nextSegmentX && s.y === nextSegmentY);
+
+                if (!isNextSegmentOccupied) {
+                    if (Math.abs(diffX) > Math.abs(diffY)) {
+                        const newDx = (diffX >= 0) ? 1 : -1;
+                        const newDy = 0;
+                        const testHead = { x: snake[0].x + newDx, y: snake[0].y + newDy };
+                        const wouldCollide = snake.slice(1).some(s => s.x === testHead.x && s.y === testHead.y);
+                        if (!wouldCollide) {
+                            dx = newDx;
+                            dy = newDy;
+                            turning = false;
+                            console.log("Fin virage: dx =", dx, "dy =", dy);
+                        }
+                    } else {
+                        const newDx = 0;
+                        const newDy = (diffY >= 0) ? 1 : -1;
+                        const testHead = { x: snake[0].x + newDx, y: snake[0].y + newDy };
+                        const wouldCollide = snake.slice(1).some(s => s.x === testHead.x && s.y === testHead.y);
+                        if (!wouldCollide) {
+                            dx = newDx;
+                            dy = newDy;
+                            turning = false;
+                            console.log("Fin virage: dx =", dx, "dy =", dy);
+                        }
+                    }
+                }
+            } else {
+                if (Math.abs(diffX) > Math.abs(diffY)) {
+                    const newDx = (diffX >= 0) ? 1 : -1;
+                    const newDy = 0;
+                    const testHead = { x: snake[0].x + newDx, y: snake[0].y + newDy };
+                    const wouldCollide = snake.slice(1).some(s => s.x === testHead.x && s.y === testHead.y);
+                    if (!wouldCollide) {
+                        dx = newDx;
+                        dy = newDy;
+                        console.log("Direction normale: dx =", dx, "dy =", dy);
+                    }
+                } else {
+                    const newDx = 0;
+                    const newDy = (diffY >= 0) ? 1 : -1;
+                    const testHead = { x: snake[0].x + newDx, y: snake[0].y + newDy };
+                    const wouldCollide = snake.slice(1).some(s => s.x === testHead.x && s.y === testHead.y);
+                    if (!wouldCollide) {
+                        dx = newDx;
+                        dy = newDy;
+                        console.log("Direction normale: dx =", dx, "dy =", dy);
+                    }
+                }
+            }
+        }
+
+        function moveSnake() {
+            if (hasMoved) return;
+            hasMoved = true;
+
+            const newHead = { x: snake[0].x + dx, y: snake[0].y + dy };
+            const mode = modeSelect.value;
+            console.log(`Tentative déplacement (mode: ${mode}): tête actuelle = {x: ${snake[0].x}, y: ${snake[0].y}}, nouvelle tête = {x: ${newHead.x}, y: ${newHead.y}}`);
+
+            if (mode === 'wrap') {
+                if (newHead.x < 0) newHead.x = GRID_SIZE - 1;
+                else if (newHead.x >= GRID_SIZE) newHead.x = 0;
+                if (newHead.y < 0) newHead.y = GRID_SIZE - 1;
+                else if (newHead.y >= GRID_SIZE) newHead.y = 0;
+                console.log("Mode wrap: nouvelle tête ajustée = {x: " + newHead.x + ", y: " + newHead.y + "}");
+            } else if (mode === 'classic') {
+                if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+                    console.log("Collision mur (mode classic): {x: " + newHead.x + ", y: " + newHead.y + "}");
+                    endGame();
+                    return;
+                }
+            }
+
+            console.log("État du serpent avant déplacement:", snake.map(s => `(${s.x}, ${s.y})`).join(", "));
+
+            for (let i = 1; i < snake.length; i++) {
+                if (snake[i].x === newHead.x && snake[i].y === newHead.y) {
+                    console.log("Collision corps: tête = {x: " + newHead.x + ", y: " + newHead.y + "}, segment = {x: " + snake[i].x + ", y: " + snake[i].y + "}");
+                    endGame();
+                    return;
+                }
+            }
+
+            snake.unshift(newHead);
+            console.log("Nouvelle tête ajoutée: {x: " + newHead.x + ", y: " + newHead.y + "}");
+
+            if (newHead.x === food.x && newHead.y === food.y) {
+                score += 10;
+                spawnEatParticles(newHead.x * TILE_SIZE + TILE_SIZE / 2, newHead.y * TILE_SIZE + TILE_SIZE / 2);
+                food = spawnFood();
+                console.log("Nourriture mangée, nouveau score: ", score);
+            } else {
+                const tail = snake.pop();
+                console.log("Queue retirée: {x: " + tail.x + ", y: " + tail.y + "}");
+            }
+
+            updateHeadPosition();
+        }
+
+        function spawnEatParticles(x, y) {
+            for (let i = 0; i < 20; i++) {
+                eatParticles.push({
+                    x: x,
+                    y: y,
+                    dx: (Math.random() - 0.5) * 4,
+                    dy: (Math.random() - 0.5) * 4,
+                    alpha: 1,
+                    size: Math.random() * 5 + 2
+                });
+            }
+        }
+
+        function updateEatParticles() {
+            eatParticles = eatParticles.filter(p => p.alpha > 0);
+            eatParticles.forEach(p => {
+                p.x += p.dx;
+                p.y += p.dy;
+                p.alpha -= 0.05;
+                p.size *= 0.95;
+            });
+        }
+
+        function endGame() {
+            gameOver = true;
+            clearInterval(gameLoopId);
+            restartButton.style.display = 'block';
+            gameOverEffect = { alpha: 1, glitch: 100, matrixLines: spawnMatrixLines() };
+            console.log("Game Over déclenché");
+        }
+
+        function spawnMatrixLines() {
+            const lines = [];
+            for (let i = 0; i < 20; i++) {
+                lines.push({
+                    x: Math.random() * canvas.width,
+                    y: -Math.random() * canvas.height,
+                    speed: Math.random() * 2 + 1,
+                    length: Math.random() * 50 + 20
+                });
+            }
+            return lines;
+        }
+
+        function updateClickEffect() {
+            if (clickEffect) {
+                if (clickEffect.growing) {
+                    clickEffect.radius += 1;
+                    if (clickEffect.radius >= clickEffect.maxRadius) {
+                        clickEffect.growing = false;
+                    }
+                } else {
+                    clickEffect.alpha -= 0.05;
+                    if (clickEffect.alpha <= 0) {
+                        clickEffect = null;
+                    }
+                }
+            }
+        }
+
+        function updateGameOverEffect() {
+            if (gameOverEffect.alpha > 0) {
+                gameOverEffect.alpha -= 0.01;
+                gameOverEffect.glitch -= 1;
+                gameOverEffect.matrixLines.forEach(line => {
+                    line.y += line.speed;
+                    if (line.y > canvas.height + line.length) {
+                        line.y = -line.length;
+                        line.x = Math.random() * canvas.width;
+                    }
+                });
+            }
+        }
+
+        function draw() {
+            // Vérifier si le contexte est valide
+            if (!ctx) {
+                console.error("Contexte 2D non disponible !");
+                return;
+            }
+
+            ctx.fillStyle = '#0d1b2a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+            for (let i = 0; i < GRID_SIZE; i++) {
+                ctx.fillRect(i * TILE_SIZE, 0, 1, canvas.height);
+                ctx.fillRect(0, i * TILE_SIZE, canvas.width, 1);
+            }
+
+            ctx.fillStyle = '#00ffff';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#00ffff';
+            snake.forEach(segment => {
+                ctx.fillRect(segment.x * TILE_SIZE, segment.y * TILE_SIZE, TILE_SIZE - 2, TILE_SIZE - 2);
+            });
+            ctx.shadowBlur = 0;
+
+            ctx.fillStyle = '#ff0066';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ff0066';
+            ctx.fillRect(food.x * TILE_SIZE, food.y * TILE_SIZE, TILE_SIZE - 2, TILE_SIZE - 2);
+            ctx.shadowBlur = 0;
+
+            ctx.fillStyle = '#ff00ff';
+            eatParticles.forEach(p => {
+                ctx.globalAlpha = p.alpha;
+                ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+            });
+            ctx.globalAlpha = 1;
+
+            if (clickEffect) {
+                ctx.beginPath();
+                ctx.arc(clickEffect.x, clickEffect.y, clickEffect.radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 0, ${clickEffect.alpha})`;
+                ctx.fill();
+                ctx.closePath();
+            }
+
+            if (gameOverEffect.alpha > 0) {
+                ctx.fillStyle = `rgba(0, 0, 0, ${gameOverEffect.alpha * 0.8})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (gameOverEffect.glitch > 0) {
+                    for (let i = 0; i < 5; i++) {
+                        let offset = Math.random() * gameOverEffect.glitch;
+                        ctx.fillStyle = `rgba(0, 255, 0, ${gameOverEffect.alpha * 0.3})`;
+                        ctx.fillRect(offset, 0, canvas.width, canvas.height);
+                    }
+                }
+
+                ctx.fillStyle = `rgba(0, 255, 0, ${gameOverEffect.alpha})`;
+                gameOverEffect.matrixLines.forEach(line => {
+                    for (let i = 0; i < line.length; i += 10) {
+                        ctx.fillText(
+                            String.fromCharCode(33 + Math.floor(Math.random() * 94)),
+                            line.x,
+                            line.y + i
+                        );
+                    }
+                });
+
+                ctx.font = '40px Courier New';
+                ctx.fillStyle = `rgba(0, 255, 0, ${gameOverEffect.alpha})`;
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+                ctx.font = '16px Courier New';
+                ctx.fillText('> RESTART SYSTEM', canvas.width / 2, canvas.height / 2 + 40);
+            }
+        }
+
+        function gameLoop() {
+            if (!gameOver) {
+                moveSnake();
+                updateClickEffect();
+                updateEatParticles();
+            }
+            updateGameOverEffect();
+            updateScore();
+            draw();
+            hasMoved = false;
+        }
+
+        resetGame();
+    </script>
+</body>
+</html>
